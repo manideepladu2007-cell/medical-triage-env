@@ -1,1 +1,0 @@
-# medical-triage-env

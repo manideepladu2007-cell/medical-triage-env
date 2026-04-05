@@ -1,0 +1,7 @@
+name: medical-triage-env
+description: medical triage decision environment
+
+tasks:
+  - easy
+  - medium
+  - hard
