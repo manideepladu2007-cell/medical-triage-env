@@ -13,7 +13,7 @@ from env.models import TriageAction
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
 
-HF_TOKEN = os.getenv("HF_TOKEN")  # REQUIRED (no default)
+HF_TOKEN = os.getenv("HF_TOKEN")
 API_KEY = HF_TOKEN
 
 
@@ -25,13 +25,8 @@ Choose ONE action from:
 ["ask_symptom_details","ask_vitals","ask_history",
 "send_to_ER","schedule_doctor","prescribe_basic_meds"]
 
-Rules:
-- Ask vitals before making critical decisions
-- If symptoms are severe → send_to_ER
-- Respond ONLY JSON
-
-Example:
-{"action_type":"ask_vitals","reasoning":"Need vitals"}
+Respond ONLY JSON:
+{"action_type":"...","reasoning":"..."}
 """
 
 
@@ -39,7 +34,6 @@ Example:
 def smart_fallback(obs_json):
     obs = json.loads(obs_json)
 
-    # Step 1: Always check vitals first
     if obs.get("vitals") == "unknown":
         return TriageAction(
             action_type="ask_vitals",
@@ -48,24 +42,15 @@ def smart_fallback(obs_json):
 
     symptoms = obs.get("symptoms", [])
 
-    # Critical conditions → ER
     if any(sym in symptoms for sym in ["chest pain", "dizziness", "anxiety"]):
         return TriageAction(
             action_type="send_to_ER",
             reasoning="Fallback: possible critical condition",
         )
 
-    # Medium → doctor
-    if len(symptoms) > 0:
-        return TriageAction(
-            action_type="schedule_doctor",
-            reasoning="Fallback: moderate symptoms",
-        )
-
-    # Default safe
     return TriageAction(
-        action_type="prescribe_basic_meds",
-        reasoning="Fallback: mild case",
+        action_type="schedule_doctor",
+        reasoning="Fallback: moderate case",
     )
 
 
@@ -84,7 +69,6 @@ def get_llm_action(client, obs_json):
 
         content = response.choices[0].message.content.strip()
 
-        # 🔧 Clean markdown JSON
         if "```" in content:
             parts = content.split("```")
             content = parts[-2] if len(parts) >= 2 else content
@@ -97,7 +81,6 @@ def get_llm_action(client, obs_json):
         )
 
     except Exception as e:
-        print(f"DEBUG | LLM failed: {e}", file=sys.stderr, flush=True)
         return smart_fallback(obs_json)
 
 
@@ -120,6 +103,8 @@ async def main():
     rewards = []
     steps_taken = 0
     success = False
+
+    debug_logs = []  # 🔥 store logs safely
 
     try:
         obs = await env.reset()
@@ -147,14 +132,12 @@ async def main():
                 flush=True,
             )
 
-            # DEBUG → stderr (SAFE)
+            # 🔥 STORE DEBUG (don't print now)
             if result.info:
-                print(
+                debug_logs.append(
                     f"DEBUG | step={step} llm_reason={action.reasoning} "
                     f"env_reason={result.info.get('reason')} "
-                    f"confidence={result.info.get('confidence')}",
-                    file=sys.stderr,
-                    flush=True,
+                    f"confidence={result.info.get('confidence')}"
                 )
 
             obs = result.observation
@@ -169,12 +152,17 @@ async def main():
         success = score > 0.0
 
     except Exception as e:
-        print(f"[ERROR] {e}", file=sys.stderr, flush=True)
+        debug_logs.append(f"ERROR: {e}")
         success = False
         score = 0.0
 
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
 
+    # 🔥 PRINT DEBUG ONLY ON STDERR (SAFE)
+    for log in debug_logs:
+        print(log, file=sys.stderr, flush=True)
+
+    # ---------------- END ---------------- #
     print(
         f"[END] success={str(success).lower()} "
         f"steps={steps_taken} score={score:.3f} rewards={rewards_str}",
