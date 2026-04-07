@@ -1,10 +1,14 @@
 import random
-from env.models import TriageObservation, TriageAction, TriageReward, TASK_REGISTRY
+from typing import Dict, Any
+
+from env.models import (
+    TriageObservation,
+    TriageAction,
+    TriageReward,
+    TASK_REGISTRY,
+)
 
 
-# ---------------------------
-# Custom StepResult
-# ---------------------------
 class StepResult:
     def __init__(self, observation, reward, done, info):
         self.observation = observation
@@ -13,149 +17,126 @@ class StepResult:
         self.info = info
 
 
-# ---------------------------
-# Environment
-# ---------------------------
 class MedTriageEnv:
-
     def __init__(self, task_id="easy", seed=42):
         self.task_id = task_id
         self.rng = random.Random(seed)
 
     async def reset(self):
-        scenario = self.rng.choice(TASK_REGISTRY[self.task_id]["scenarios"])
-        self.hidden = scenario["hidden_truth"]
+        self.current_case = self.rng.choice(
+            TASK_REGISTRY[self.task_id]["scenarios"]
+        )
+        self.step_count = 0
+        self.done = False
+        self.asked_questions = set()
 
-        # slight random variation for realism
-        age_variation = self.rng.randint(-3, 3)
+        self.current_vitals = "unknown"
 
-        self.state = TriageObservation(
-            symptoms=scenario["initial_symptoms"],
-            age=scenario["age"] + age_variation,
+        return TriageObservation(
+            symptoms=self.current_case["initial_symptoms"],
+            age=self.current_case["age"],
             known_conditions=[],
             vitals="unknown",
-            patient_response=None,
-            time_elapsed=0,
-            available_actions=self.actions(),
+            available_actions=[
+                "ask_symptom_details",
+                "ask_vitals",
+                "ask_history",
+                "send_to_ER",
+                "schedule_doctor",
+                "prescribe_basic_meds",
+            ],
         )
-
-        self.done = False
-        self.steps = 0
-        self.asked = []
-
-        return self.state
 
     async def step(self, action: TriageAction):
-
-        info = {}
-
         if self.done:
-            return StepResult(self.state, TriageReward(value=0.0), True, info)
+            return StepResult(None, TriageReward(value=0.0), True, {})
 
-        self.steps += 1
+        self.step_count += 1
+        hidden = self.current_case["hidden_truth"]
+
         reward = 0.0
+        info = {"reason": "", "confidence": 0.0}
 
-        # ---------------------------
-        # QUESTION ACTIONS
-        # ---------------------------
-        if action.action_type in ["ask_symptom_details", "ask_vitals", "ask_history"]:
-
-            if action.action_type in self.asked:
-                reward = -0.05
+        # ---------------- ASK QUESTIONS ---------------- #
+        if action.action_type.startswith("ask"):
+            if action.action_type in self.asked_questions:
+                reward -= 0.05
                 info["reason"] = "Repeated question"
-
+                info["confidence"] = 0.3
             else:
-                self.asked.append(action.action_type)
+                self.asked_questions.add(action.action_type)
 
-                if action.action_type in self.hidden["useful_questions"]:
-                    reward = 0.1
+                if action.action_type in hidden["useful_questions"]:
+                    reward += 0.1
                     info["reason"] = "Useful question"
+                    info["confidence"] = 0.8
                 else:
-                    reward = 0.03
-                    info["reason"] = "Less useful question"
+                    reward -= 0.02
+                    info["reason"] = "Irrelevant question"
+                    info["confidence"] = 0.5
 
-            response = self.hidden["question_responses"].get(
-                action.action_type, "Patient unsure"
+                if action.action_type == "ask_vitals":
+                    self.current_vitals = hidden["revealed_vitals"]
+
+            obs = TriageObservation(
+                symptoms=self.current_case["initial_symptoms"],
+                age=self.current_case["age"],
+                known_conditions=[],
+                vitals=self.current_vitals,
+                patient_response=hidden["question_responses"].get(
+                    action.action_type, "No response"
+                ),
+                time_elapsed=self.step_count,
+                available_actions=[
+                    "ask_symptom_details",
+                    "ask_vitals",
+                    "ask_history",
+                    "send_to_ER",
+                    "schedule_doctor",
+                    "prescribe_basic_meds",
+                ],
             )
-            self.state.patient_response = response
 
-            if action.action_type == "ask_vitals":
-                self.state.vitals = self.hidden["revealed_vitals"]
+            return StepResult(obs, TriageReward(value=reward), False, info)
 
-        # ---------------------------
-        # FINAL DECISION ACTIONS
-        # ---------------------------
+        # ---------------- FINAL DECISION ---------------- #
+        correct = hidden["correct_action"]
+
+        if action.action_type == correct:
+            reward += 1.0
+            info["reason"] = "Correct decision"
+            info["confidence"] = 0.8
         else:
-            self.done = True
-
-            if action.action_type == self.hidden["correct_action"]:
-                reward = 1.0
-                info["reason"] = "Correct decision"
-
-            elif self.hidden["severity"] == "critical":
-                reward = -1.0
+            if hidden["severity"] == "critical":
+                reward -= 1.0
                 info["reason"] = "Missed critical condition"
-
+                info["confidence"] = 1.0
             else:
-                reward = -0.4
-                info["reason"] = "Incorrect decision"
-
-            # penalty for blind decision
-            if len(self.asked) == 0:
                 reward -= 0.2
-                info["penalty"] = "No prior questioning"
+                info["reason"] = "Suboptimal decision"
+                info["confidence"] = 0.6
 
-        # ---------------------------
-        # BONUS FOR GOOD EXPLORATION
-        # ---------------------------
-        if not self.done and len(self.asked) >= 2:
-            reward += 0.05
-            info["bonus"] = "Good exploration"
-
-        # ---------------------------
-        # TIME PENALTY (HARD TASK)
-        # ---------------------------
-        if self.task_id == "hard" and not self.done and self.steps > 6:
-            penalty = 0.05 * (self.steps - 6)
-            reward -= penalty
-            info["time_penalty"] = round(penalty, 2)
-
-        # ---------------------------
-        # CONFIDENCE SCORE (NEW FEATURE)
-        # ---------------------------
-        confidence = 0.5
-
-        if self.state.vitals == "unstable":
-            confidence += 0.3
-
-        if len(self.asked) >= 2:
-            confidence += 0.2
-
-        confidence = min(1.0, confidence)
-        info["confidence"] = round(confidence, 2)
-
-        # ---------------------------
-        # UPDATE STATE
-        # ---------------------------
-        self.state.time_elapsed = self.steps
+        self.done = True
 
         return StepResult(
-            observation=self.state,
-            reward=TriageReward(value=round(reward, 3), breakdown=info),
-            done=self.done,
-            info=info
+            TriageObservation(
+                symptoms=[],
+                age=0,
+                available_actions=[],
+            ),
+            TriageReward(value=reward),
+            True,
+            info,
         )
 
-    def state(self):
-        return self.state
-
-    def actions(self):
-        return [
-            "ask_symptom_details",
-            "ask_vitals",
-            "ask_history",
-            "send_to_ER",
-            "schedule_doctor",
-            "prescribe_basic_meds",
-            "ignore_case",
-        ]
+    # ✅ REQUIRED FOR OPENENV VALIDATION
+    def state(self) -> Dict[str, Any]:
+        return {
+            "step": getattr(self, "step_count", 0),
+            "symptoms": self.current_case["initial_symptoms"]
+            if hasattr(self, "current_case")
+            else [],
+            "age": self.current_case["age"]
+            if hasattr(self, "current_case")
+            else 0,
+        }
