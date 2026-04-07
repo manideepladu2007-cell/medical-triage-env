@@ -1,182 +1,128 @@
-🏥 Medical Triage OpenEnv Environment
+# 🏥 Clinical Triage Environment (OpenEnv RL)
 
- 📌 Overview
+## 🚀 Overview
 
-This project implements a **real-world medical triage simulation environment** designed for evaluating AI agents.
-The agent must analyze patient symptoms, ask relevant questions, and make critical healthcare decisions under uncertainty.
+This project implements a **real-world medical triage simulation environment** using the OpenEnv framework.
+It models how clinicians assess patients under uncertainty, gather information, and make critical decisions.
 
-Unlike toy environments, this system models **real decision-making challenges** including incomplete information, time pressure, and risk-sensitive outcomes.
+The environment is designed for **LLM-based agents** to interact, reason, and act through structured observations, actions, and rewards.
 
+---
 
+## 🎯 Key Features
 
- 🎯 Objectives
+### 🧠 Real-World Simulation
 
-* Simulate realistic patient triage scenarios
-* Evaluate agent reasoning under uncertainty
-* Encourage safe and optimal medical decision-making
-* Provide meaningful reward signals with partial progress
+* Simulates clinical triage scenarios (fever, chest pain, dizziness, etc.)
+* Models **uncertain and misleading symptoms**
+* Includes **hidden conditions** (e.g., stroke disguised as dizziness)
 
+---
 
+### 🔍 Multi-Step Decision Making
 
- 🧠 Environment Design
+Agents must:
 
- 🔍 Observation Space
+1. Ask relevant questions (vitals, history, symptoms)
+2. Interpret patient responses
+3. Make a final decision (ER / doctor / medication)
 
-Each step returns structured patient data:
+---
 
-* Symptoms (list of strings)
-* Age
-* Known conditions
-* Vitals (hidden initially)
-* Patient responses
-* Time elapsed
-* Available actions
+### ⚠️ Adversarial & Edge Cases
 
+* Critical conditions masked as mild symptoms
+* Misleading patient responses
+* Forces **reasoning over pattern matching**
 
+---
 
- ⚙️ Action Space
+### 🎯 Meaningful Reward Function
 
-The agent can:
+* ✅ +0.10 → Asking useful questions
+* ❌ -0.05 → Repeating questions
+* ❌ -1.00 → Missing critical condition
+* ✅ +1.00 → Correct final decision
 
-* Ask questions:
+Encourages **safe, efficient, and intelligent decision-making**
 
-  * `ask_symptom_details`
-  * `ask_vitals`
-  * `ask_history`
-* Make decisions:
+---
 
-  * `send_to_ER`
-  * `schedule_doctor`
-  * `prescribe_basic_meds`
-  * `ignore_case`
+### 🤖 LLM-Compatible Environment
 
+* Fully compatible with OpenAI client
+* Uses:
 
+  * `API_BASE_URL`
+  * `MODEL_NAME`
+  * `HF_TOKEN`
+* Includes **robust fallback policy** to ensure stability even if API fails
 
- 🏆 Reward Function
+---
 
-* +1.0 → Correct decision
-* -1.0 → Critical mistake (e.g., ignoring emergency)
-* -0.4 → Incorrect non-critical decision
-* +0.1 → Useful question
-* +0.03 → Less useful question
-* -0.05 → Repeated question
-* Time penalty applied in hard scenarios
+## 🧪 Tasks
 
+| Difficulty | Description                                       |
+| ---------- | ------------------------------------------------- |
+| Easy       | Simple symptoms (fever, cough)                    |
+| Medium     | Ambiguous cases (headache, blurred vision)        |
+| Hard       | Critical hidden conditions (heart attack, stroke) |
 
+---
 
- 📊 Tasks
+## ⚙️ OpenEnv Compliance
 
-🟢 Easy
+✔ Typed models using Pydantic
+✔ `reset()`, `step()`, `state()` implemented
+✔ Deterministic grader (0.0 → 1.0 score)
+✔ Structured environment interactions
 
-* Clear symptoms
-* Low-risk cases
-* Straightforward decisions
+---
 
- 🟡 Medium
-
-* Moderate ambiguity
-* Requires reasoning through multiple signals
-
- 🔴 Hard
-
-* High-risk cases (e.g., heart attack disguised as mild symptoms)
-* Requires fast and accurate decisions
-* Includes time penalty
-
-
-
- 🧪 Example Run
+## 📊 Example Output
 
 ```
-[START] task=medical-triage env=medtriage-env model=baseline-agent
+[START] task=medical-triage env=medtriage-env model=Qwen/Qwen2.5-72B-Instruct
 [STEP] step=1 action=ask_vitals reward=0.10 done=false error=null
 [STEP] step=2 action=send_to_ER reward=1.00 done=true error=null
-[END] success=true steps=2 rewards=0.10,1.00
+[END] success=true steps=2 score=0.733 rewards=0.10,1.00
 ```
 
 ---
 
- 🏗️ Project Structure
+## 🏗️ Architecture
 
-```
-env/
-  env.py
-  models.py
-
-evaluation/
-  graders.py
-
-inference.py
-Dockerfile
-requirements.txt
-openenv.yaml
-README.md
-```
+* `env/` → Environment logic & reward system
+* `evaluation/` → Graders
+* `inference.py` → LLM-driven agent
+* `app.py` → FastAPI server (HF Spaces compatible)
+* `Dockerfile` → Deployment
 
 ---
 
- ⚙️ Setup Instructions
+## 🚀 Deployment
 
- 1️⃣ Install dependencies
-
-```
-pip install -r requirements.txt
-```
-
- 2️⃣ Run locally
-
-```
-python inference.py
-```
+This project is deployed on **Hugging Face Spaces** using Docker.
+The environment runs as a live API and logs structured agent interactions.
 
 ---
 
- 🐳 Docker Usage
+## 💡 Why This Stands Out
 
- Build image
-
-```
-docker build -t med-triage-env .
-```
-
- Run container
-
-```
-docker run med-triage-env
-```
+* Real-world healthcare application
+* Handles **uncertainty and adversarial cases**
+* Encourages **reasoning over shortcuts**
+* Robust to API failures
+* Fully compliant with OpenEnv specifications
 
 ---
 
- 📈 Evaluation
+## 🏁 Conclusion
 
-The environment includes deterministic graders to evaluate:
-
-* Decision accuracy
-* Question usefulness
-* Efficiency (steps taken)
-* Safety (penalties for critical mistakes)
-
-Scores are normalized between **0.0 and 1.0**.
-
-
- 🚀 Key Features
-
- ✅ Real-world medical decision simulation
- ✅ Hidden ground truth (agent must infer)
- ✅ Multi-step reasoning environment
- ✅ Safety-critical reward design
- ✅ Time pressure in complex scenarios
- ✅ Fully Dockerized & reproducible
-
-
-
- 🏁 Conclusion
-
-This environment provides a **robust benchmark for evaluating AI agents in high-stakes decision-making scenarios**, emphasizing correctness, efficiency, and safety.
+This environment provides a strong benchmark for evaluating **decision-making capabilities of LLM agents** in high-stakes, real-world scenarios like healthcare triage.
 
 ---
 
-Note: The structured output ([START], [STEP], [END]) is emitted to stdout and can be viewed in container logs.
+## 👤 Author
 
-
-Manideep
+Manideep Myakala
