@@ -55,7 +55,7 @@ Respond ONLY in JSON:
 
         content = response.choices[0].message.content.strip()
 
-        # ✅ FIXED JSON CLEANUP
+        # JSON cleanup fix
         if content.startswith("```"):
             content = content.strip("`")
             if content.startswith("json"):
@@ -77,7 +77,13 @@ Respond ONLY in JSON:
 # MAIN
 # ---------------------------
 async def main():
-    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+
+    # ✅ SAFE CLIENT INITIALIZATION
+    if API_KEY:
+        client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+    else:
+        client = None
+
     env = MedTriageEnv(task_id="hard")
 
     print(f"[START] task=medical-triage env=medtriage-env model={MODEL_NAME}", flush=True)
@@ -91,7 +97,11 @@ async def main():
 
         for step in range(1, 9):
 
-            action_str, reasoning = get_llm_decision(client, obs)
+            # ✅ SAFE DECISION LOGIC
+            if client:
+                action_str, reasoning = get_llm_decision(client, obs)
+            else:
+                action_str, reasoning = fallback_decision(obs)
 
             action = TriageAction(
                 action_type=action_str,
@@ -106,14 +116,14 @@ async def main():
             rewards.append(reward)
             steps_taken = step
 
-            # ✅ STRICT OUTPUT
+            # ✅ STRICT OUTPUT FORMAT
             print(
                 f"[STEP] step={step} action={action.action_type} "
                 f"reward={reward:.2f} done={str(done).lower()} error=null",
                 flush=True
             )
 
-            # DEBUG (safe)
+            # DEBUG LOG (stderr safe)
             debug_logs.append(
                 f"DEBUG | step={step} llm_reason={reasoning} "
                 f"env_reason={result.info.get('reason')} "
@@ -125,7 +135,7 @@ async def main():
             if done:
                 break
 
-        # ✅ SCORE CALCULATION (FINAL FIX)
+        # ✅ SCORE CALCULATION
         total_reward = sum(rewards)
         score = total_reward / 1.5
         score = max(0.0, min(1.0, score))
@@ -145,7 +155,7 @@ async def main():
         flush=True
     )
 
-    # DEBUG AFTER END (stderr)
+    # DEBUG AFTER END
     for log in debug_logs:
         print(log, file=sys.stderr, flush=True)
 
