@@ -1,47 +1,86 @@
 import asyncio
+import os
 import sys
 import json
+from openai import OpenAI
+
 from env.env import MedTriageEnv
 from env.models import TriageAction
 
 
 # ---------------------------
-# MOCK LLM AGENT
+# ENV VARIABLES
 # ---------------------------
-def mock_llm_decision(observation):
-    """
-    Simulates LLM reasoning over observation.
-    """
+API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
 
-    obs_dict = observation.model_dump()
 
-    # Simulated "reasoning"
-    if obs_dict["vitals"] == "unknown":
-        action = "ask_vitals"
-        reasoning = "Vitals unknown, need more information"
-
-    elif obs_dict["vitals"] in ["unstable", "slightly_unstable"]:
-        action = "send_to_ER"
-        reasoning = "Vitals indicate risk, escalate immediately"
-
+# ---------------------------
+# FALLBACK LOGIC
+# ---------------------------
+def fallback_decision(obs):
+    if obs.vitals == "unknown":
+        return "ask_vitals", "Fallback: need vitals"
+    elif obs.vitals in ["unstable", "slightly_unstable"]:
+        return "send_to_ER", "Fallback: unstable condition"
     else:
-        action = "prescribe_basic_meds"
-        reasoning = "Condition appears mild"
+        return "prescribe_basic_meds", "Fallback: mild condition"
 
-    return action, reasoning
+
+# ---------------------------
+# LLM CALL
+# ---------------------------
+def get_llm_decision(client, obs):
+    prompt = f"""
+You are a medical triage agent.
+
+Patient:
+{obs.model_dump_json()}
+
+Choose ONE action from:
+["ask_symptom_details","ask_vitals","ask_history","send_to_ER","schedule_doctor","prescribe_basic_meds"]
+
+Respond ONLY in JSON:
+{{"action_type": "...", "reasoning": "..."}}
+"""
+
+    try:
+        response = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+            max_tokens=100
+        )
+
+        content = response.choices[0].message.content.strip()
+
+        # ✅ FIXED JSON CLEANUP
+        if content.startswith("```"):
+            content = content.strip("`")
+            if content.startswith("json"):
+                content = content[4:].strip()
+
+        data = json.loads(content)
+
+        action = data.get("action_type", "ask_vitals")
+        reason = data.get("reasoning", "Fallback reasoning")
+
+        return action, reason
+
+    except Exception as e:
+        print(f"DEBUG | LLM failed: {e}", file=sys.stderr, flush=True)
+        return fallback_decision(obs)
 
 
 # ---------------------------
 # MAIN
 # ---------------------------
 async def main():
+    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
     env = MedTriageEnv(task_id="hard")
 
-    TASK_NAME = "medical-triage"
-    ENV_NAME = "medtriage-env"
-    MODEL_NAME = "mock-llm-agent"  # 🔥 important change
-
-    print(f"[START] task={TASK_NAME} env={ENV_NAME} model={MODEL_NAME}", flush=True)
+    print(f"[START] task=medical-triage env=medtriage-env model={MODEL_NAME}", flush=True)
 
     rewards = []
     steps_taken = 0
@@ -52,8 +91,7 @@ async def main():
 
         for step in range(1, 9):
 
-            # 🔥 LLM-style decision
-            action_str, reasoning = mock_llm_decision(obs)
+            action_str, reasoning = get_llm_decision(client, obs)
 
             action = TriageAction(
                 action_type=action_str,
@@ -68,17 +106,17 @@ async def main():
             rewards.append(reward)
             steps_taken = step
 
-            # REQUIRED OUTPUT
+            # ✅ STRICT OUTPUT
             print(
                 f"[STEP] step={step} action={action.action_type} "
                 f"reward={reward:.2f} done={str(done).lower()} error=null",
                 flush=True
             )
 
-            # STORE DEBUG
+            # DEBUG (safe)
             debug_logs.append(
-                f"DEBUG | step={step} llm_reason='{reasoning}' "
-                f"env_reason='{result.info.get('reason')}' "
+                f"DEBUG | step={step} llm_reason={reasoning} "
+                f"env_reason={result.info.get('reason')} "
                 f"confidence={result.info.get('confidence')}"
             )
 
@@ -87,21 +125,27 @@ async def main():
             if done:
                 break
 
-        success = sum(rewards) > 0
+        # ✅ SCORE CALCULATION (FINAL FIX)
+        total_reward = sum(rewards)
+        score = total_reward / 1.5
+        score = max(0.0, min(1.0, score))
+        success = score > 0.0
 
     except Exception as e:
         print(f"[ERROR] {e}", file=sys.stderr, flush=True)
         success = False
+        score = 0.0
 
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
 
+    # ✅ FINAL OUTPUT (WITH SCORE)
     print(
         f"[END] success={str(success).lower()} "
-        f"steps={steps_taken} rewards={rewards_str}",
+        f"steps={steps_taken} score={score:.3f} rewards={rewards_str}",
         flush=True
     )
 
-    # 🔥 DEBUG AFTER END (SAFE)
+    # DEBUG AFTER END (stderr)
     for log in debug_logs:
         print(log, file=sys.stderr, flush=True)
 
