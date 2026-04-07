@@ -13,7 +13,7 @@ from env.models import TriageAction
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
 
-HF_TOKEN = os.getenv("HF_TOKEN")  # MUST exist (no default)
+HF_TOKEN = os.getenv("HF_TOKEN")  # REQUIRED (no default)
 API_KEY = HF_TOKEN
 
 
@@ -25,9 +25,48 @@ Choose ONE action from:
 ["ask_symptom_details","ask_vitals","ask_history",
 "send_to_ER","schedule_doctor","prescribe_basic_meds"]
 
-Respond ONLY JSON:
-{"action_type":"...","reasoning":"..."}
+Rules:
+- Ask vitals before making critical decisions
+- If symptoms are severe → send_to_ER
+- Respond ONLY JSON
+
+Example:
+{"action_type":"ask_vitals","reasoning":"Need vitals"}
 """
+
+
+# ---------------- SMART FALLBACK ---------------- #
+def smart_fallback(obs_json):
+    obs = json.loads(obs_json)
+
+    # Step 1: Always check vitals first
+    if obs.get("vitals") == "unknown":
+        return TriageAction(
+            action_type="ask_vitals",
+            reasoning="Fallback: checking vitals",
+        )
+
+    symptoms = obs.get("symptoms", [])
+
+    # Critical conditions → ER
+    if any(sym in symptoms for sym in ["chest pain", "dizziness", "anxiety"]):
+        return TriageAction(
+            action_type="send_to_ER",
+            reasoning="Fallback: possible critical condition",
+        )
+
+    # Medium → doctor
+    if len(symptoms) > 0:
+        return TriageAction(
+            action_type="schedule_doctor",
+            reasoning="Fallback: moderate symptoms",
+        )
+
+    # Default safe
+    return TriageAction(
+        action_type="prescribe_basic_meds",
+        reasoning="Fallback: mild case",
+    )
 
 
 # ---------------- LLM FUNCTION ---------------- #
@@ -45,9 +84,10 @@ def get_llm_action(client, obs_json):
 
         content = response.choices[0].message.content.strip()
 
-        # 🔧 JSON CLEANING (SAFE)
+        # 🔧 Clean markdown JSON
         if "```" in content:
-            content = content.split("```")[-2]
+            parts = content.split("```")
+            content = parts[-2] if len(parts) >= 2 else content
 
         data = json.loads(content)
 
@@ -58,12 +98,7 @@ def get_llm_action(client, obs_json):
 
     except Exception as e:
         print(f"DEBUG | LLM failed: {e}", file=sys.stderr, flush=True)
-
-        # 🔥 FALLBACK (SAFE)
-        return TriageAction(
-            action_type="ask_vitals",
-            reasoning="Fallback: need vitals",
-        )
+        return smart_fallback(obs_json)
 
 
 # ---------------- MAIN ---------------- #
@@ -73,7 +108,6 @@ async def main():
     TASK_NAME = "medical-triage"
     ENV_NAME = "medtriage-env"
 
-    # Init client ONLY if token exists
     client = None
     if API_KEY:
         client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
@@ -91,14 +125,12 @@ async def main():
         obs = await env.reset()
 
         for step in range(1, 8):
+
             # ---------------- ACTION ---------------- #
             if client:
                 action = get_llm_action(client, obs.model_dump_json())
             else:
-                action = TriageAction(
-                    action_type="ask_vitals",
-                    reasoning="No API key fallback",
-                )
+                action = smart_fallback(obs.model_dump_json())
 
             # ---------------- STEP ---------------- #
             result = await env.step(action)
@@ -115,7 +147,7 @@ async def main():
                 flush=True,
             )
 
-            # DEBUG → stderr
+            # DEBUG → stderr (SAFE)
             if result.info:
                 print(
                     f"DEBUG | step={step} llm_reason={action.reasoning} "
@@ -143,7 +175,6 @@ async def main():
 
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
 
-    # ---------------- END ---------------- #
     print(
         f"[END] success={str(success).lower()} "
         f"steps={steps_taken} score={score:.3f} rewards={rewards_str}",
