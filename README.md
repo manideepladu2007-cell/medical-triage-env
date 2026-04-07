@@ -176,6 +176,7 @@ This environment provides a **robust benchmark for evaluating AI agents in high-
 
 ---
 
+Note: The structured output ([START], [STEP], [END]) is emitted to stdout and can be viewed in container logs.
 
 
 Manideep
