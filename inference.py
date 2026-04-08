@@ -2,122 +2,123 @@ import asyncio
 import os
 import sys
 import json
-
 from openai import OpenAI
 
 from env.env import MedTriageEnv
 from env.models import TriageAction
 
 
-# ---------------- ENV VARIABLES ---------------- #
+# ---------------------------
+# ENV VARIABLES
+# ---------------------------
+API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
 
-HF_TOKEN = os.getenv("HF_TOKEN")
-API_KEY = HF_TOKEN
 
+# ---------------------------
+# SAFE LLM CALL
+# ---------------------------
+def get_llm_action(client, observation):
+    """
+    Calls LLM safely. If fails → fallback logic.
+    """
 
-# ---------------- SYSTEM PROMPT ---------------- #
-SYSTEM_PROMPT = """
+    # If no API → fallback immediately
+    if not API_KEY:
+        return fallback_decision(observation, "No API key fallback")
+
+    prompt = f"""
 You are a medical triage agent.
 
-Choose ONE action from:
-["ask_symptom_details","ask_vitals","ask_history",
-"send_to_ER","schedule_doctor","prescribe_basic_meds"]
+Patient:
+{observation.model_dump_json()}
 
-Respond ONLY JSON:
-{"action_type":"...","reasoning":"..."}
+Choose ONE action from:
+["ask_symptom_details", "ask_vitals", "ask_history",
+"send_to_ER", "schedule_doctor", "prescribe_basic_meds"]
+
+Respond ONLY in JSON:
+{{"action_type": "...", "reasoning": "..."}}
 """
 
-
-# ---------------- SMART FALLBACK ---------------- #
-def smart_fallback(obs_json):
-    obs = json.loads(obs_json)
-
-    if obs.get("vitals") == "unknown":
-        return TriageAction(
-            action_type="ask_vitals",
-            reasoning="Fallback: checking vitals",
-        )
-
-    symptoms = obs.get("symptoms", [])
-
-    if any(sym in symptoms for sym in ["chest pain", "dizziness", "anxiety"]):
-        return TriageAction(
-            action_type="send_to_ER",
-            reasoning="Fallback: possible critical condition",
-        )
-
-    return TriageAction(
-        action_type="schedule_doctor",
-        reasoning="Fallback: moderate case",
-    )
-
-
-# ---------------- LLM FUNCTION ---------------- #
-def get_llm_action(client, obs_json):
     try:
         response = client.chat.completions.create(
             model=MODEL_NAME,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": obs_json},
-            ],
+            messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
-            max_tokens=120,
+            max_tokens=150
         )
 
-        content = response.choices[0].message.content.strip()
+        raw = response.choices[0].message.content.strip()
 
-        if "```" in content:
-            parts = content.split("```")
-            content = parts[-2] if len(parts) >= 2 else content
+        # 🛡 CLEAN JSON (handles ```json blocks)
+        if "```" in raw:
+            raw = raw.split("```")[-2].strip()
 
-        data = json.loads(content)
+        data = json.loads(raw)
 
-        return TriageAction(
-            action_type=data.get("action_type", "ask_vitals"),
-            reasoning=data.get("reasoning", ""),
-        )
+        action = data.get("action_type", "ask_vitals")
+        reasoning = data.get("reasoning", "LLM decision")
+
+        return action, reasoning
 
     except Exception as e:
-        return smart_fallback(obs_json)
+        return fallback_decision(observation, f"LLM error: {e}")
 
 
-# ---------------- MAIN ---------------- #
+# ---------------------------
+# FALLBACK POLICY (SAFE)
+# ---------------------------
+def fallback_decision(obs, reason):
+    """
+    Simple safe policy when LLM fails.
+    """
+
+    if obs.vitals == "unknown":
+        return "ask_vitals", reason
+
+    if "chest pain" in obs.symptoms or obs.vitals == "unstable":
+        return "send_to_ER", reason
+
+    return "ask_symptom_details", reason
+
+
+# ---------------------------
+# MAIN
+# ---------------------------
 async def main():
-    env = MedTriageEnv(task_id="hard")
-
-    TASK_NAME = "medical-triage"
-    ENV_NAME = "medtriage-env"
 
     client = None
     if API_KEY:
         client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
-    print(
-        f"[START] task={TASK_NAME} env={ENV_NAME} model={MODEL_NAME}",
-        flush=True,
-    )
+    env = MedTriageEnv(task_id="hard")
+
+    TASK_NAME = "medical-triage"
+    ENV_NAME = "medtriage-env"
 
     rewards = []
     steps_taken = 0
     success = False
 
-    debug_logs = []  # 🔥 store logs safely
+    # ---------------- START ---------------- #
+    print(
+        f"[START] task={TASK_NAME} env={ENV_NAME} model={MODEL_NAME}",
+        flush=True
+    )
 
     try:
         obs = await env.reset()
 
-        for step in range(1, 8):
+        for step in range(1, 9):
 
-            # ---------------- ACTION ---------------- #
-            if client:
-                action = get_llm_action(client, obs.model_dump_json())
-            else:
-                action = smart_fallback(obs.model_dump_json())
+            # ---- GET ACTION ---- #
+            action_str, llm_reason = get_llm_action(client, obs)
 
-            # ---------------- STEP ---------------- #
+            action = TriageAction(action_type=action_str)
+
+            # ---- STEP ---- #
             result = await env.step(action)
 
             reward = result.reward.value
@@ -126,18 +127,22 @@ async def main():
             rewards.append(reward)
             steps_taken = step
 
+            # ✅ STRICT STDOUT (ONLY THIS FORMAT)
             print(
                 f"[STEP] step={step} action={action.action_type} "
                 f"reward={reward:.2f} done={str(done).lower()} error=null",
-                flush=True,
+                flush=True
             )
 
-            # 🔥 STORE DEBUG (don't print now)
+            # 🔥 DEBUG → STDERR ONLY (SAFE)
             if result.info:
-                debug_logs.append(
-                    f"DEBUG | step={step} llm_reason={action.reasoning} "
-                    f"env_reason={result.info.get('reason')} "
-                    f"confidence={result.info.get('confidence')}"
+                env_reason = result.info.get("reason", "none")
+
+                print(
+                    f"DEBUG | step={step} llm_reason={llm_reason} "
+                    f"env_reason={env_reason}",
+                    file=sys.stderr,
+                    flush=True
                 )
 
             obs = result.observation
@@ -145,30 +150,30 @@ async def main():
             if done:
                 break
 
-        # ---------------- SCORE ---------------- #
+        # ---- SCORE ---- #
         total_reward = sum(rewards)
         score = total_reward / 1.5
         score = max(0.0, min(1.0, score))
+
         success = score > 0.0
 
     except Exception as e:
-        debug_logs.append(f"ERROR: {e}")
+        print(f"ERROR | {e}", file=sys.stderr, flush=True)
         success = False
         score = 0.0
 
+    # ---------------- END ---------------- #
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
 
-    # 🔥 PRINT DEBUG ONLY ON STDERR (SAFE)
-    for log in debug_logs:
-        print(log, file=sys.stderr, flush=True)
-
-    # ---------------- END ---------------- #
     print(
         f"[END] success={str(success).lower()} "
         f"steps={steps_taken} score={score:.3f} rewards={rewards_str}",
-        flush=True,
+        flush=True
     )
 
 
+# ---------------------------
+# ENTRY
+# ---------------------------
 if __name__ == "__main__":
     asyncio.run(main())
