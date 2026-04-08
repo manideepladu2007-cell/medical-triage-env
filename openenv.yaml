@@ -1,7 +1,14 @@
-name: medical-triage-env
-description: medical triage decision environment
+name: clinical-triage-env
+version: 1.0.0
+description: Medical triage RL environment.
 
 tasks:
   - easy
   - medium
   - hard
+
+endpoints:
+  health: GET /health
+  reset: POST /reset
+  step: POST /step
+  state: GET /state
