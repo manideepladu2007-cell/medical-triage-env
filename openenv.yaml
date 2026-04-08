@@ -1,11 +1,14 @@
 name: clinical-triage-env
 version: 1.0.0
-description: Medical triage RL environment.
+description: Medical triage RL environment with multi-task grading.
 
 tasks:
-  - easy
-  - medium
-  - hard
+  easy:
+    grader: evaluation.graders:grade_easy
+  medium:
+    grader: evaluation.graders:grade_medium
+  hard:
+    grader: evaluation.graders:grade_hard
 
 endpoints:
   health: GET /health
