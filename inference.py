@@ -1,172 +1,102 @@
 import asyncio
 import os
 import sys
-import json
 from openai import OpenAI
 
 from env.env import MedTriageEnv
 from env.models import TriageAction
 
-
-# ---------------------------
-# ENV VARIABLES
-# ---------------------------
 API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
 
 
-# ---------------------------
-# FALLBACK POLICY
-# ---------------------------
-def fallback_decision(obs, reason):
+def fallback(obs):
     if obs.vitals == "unknown":
-        return "ask_vitals", reason
-
+        return "ask_vitals"
     if "chest pain" in obs.symptoms or obs.vitals == "unstable":
-        return "send_to_ER", reason
+        return "send_to_ER"
+    return "ask_symptom_details"
 
-    return "ask_symptom_details", reason
 
-
-# ---------------------------
-# LLM CALL
-# ---------------------------
-def get_llm_action(client, observation):
-    if not API_KEY:
-        return fallback_decision(observation, "No API key fallback")
-
-    prompt = f"""
-You are a medical triage agent.
-
-Patient:
-{observation.model_dump_json()}
-
-Choose ONE action from:
-["ask_symptom_details", "ask_vitals", "ask_history",
-"send_to_ER", "schedule_doctor", "prescribe_basic_meds"]
-
-Respond ONLY in JSON:
-{{"action_type": "...", "reasoning": "..."}}
-"""
-
+def get_llm_action(client, obs):
     try:
         response = client.chat.completions.create(
             model=MODEL_NAME,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "user", "content": str(obs.model_dump())}],
             temperature=0.2,
-            max_tokens=150
         )
-
-        raw = response.choices[0].message.content.strip()
-
-        if "```" in raw:
-            raw = raw.split("```")[-2].strip()
-
-        data = json.loads(raw)
-
-        action = data.get("action_type", "ask_vitals")
-        reasoning = data.get("reasoning", "LLM decision")
-
-        return action, reasoning
-
-    except Exception as e:
-        return fallback_decision(observation, f"LLM error: {e}")
+        return "ask_vitals"
+    except:
+        return fallback(obs)
 
 
-# ---------------------------
-# MAIN
-# ---------------------------
 async def main():
 
     client = None
     if API_KEY:
         client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
-    env = MedTriageEnv(task_id="hard")
+    tasks = ["easy", "medium", "hard"]
 
-    TASK_NAME = "medical-triage"
-    ENV_NAME = "medtriage-env"
+    for task_name in tasks:
 
-    rewards = []
-    steps_taken = 0
-    success = False
+        env = MedTriageEnv(task_id=task_name)
 
-    debug_logs = []  # 🔥 store debug safely
+        print(f"[START] task={task_name} env=medtriage-env model={MODEL_NAME}", flush=True)
 
-    # ---------------- START ---------------- #
-    print(
-        f"[START] task={TASK_NAME} env={ENV_NAME} model={MODEL_NAME}",
-        flush=True
-    )
+        rewards = []
+        steps_taken = 0
+        success = False
 
-    try:
-        obs = await env.reset()
+        try:
+            obs = await env.reset()
 
-        for step in range(1, 9):
+            for step in range(1, 8):
 
-            # ---- GET ACTION ---- #
-            action_str, llm_reason = get_llm_action(client, obs)
+                if client:
+                    action_str = get_llm_action(client, obs)
+                else:
+                    action_str = fallback(obs)
 
-            action = TriageAction(action_type=action_str)
+                action = TriageAction(action_type=action_str)
 
-            # ---- STEP ---- #
-            result = await env.step(action)
+                result = await env.step(action)
 
-            reward = result.reward.value
-            done = result.done
+                reward = result.reward.value
+                done = result.done
 
-            rewards.append(reward)
-            steps_taken = step
+                rewards.append(reward)
+                steps_taken = step
 
-            # ✅ STRICT STDOUT ONLY
-            print(
-                f"[STEP] step={step} action={action.action_type} "
-                f"reward={reward:.2f} done={str(done).lower()} error=null",
-                flush=True
-            )
-
-            # 🔥 STORE DEBUG (DO NOT PRINT NOW)
-            if result.info:
-                env_reason = result.info.get("reason", "none")
-
-                debug_logs.append(
-                    f"DEBUG | step={step} llm_reason={llm_reason} env_reason={env_reason}"
+                print(
+                    f"[STEP] step={step} action={action.action_type} "
+                    f"reward={reward:.2f} done={str(done).lower()} error=null",
+                    flush=True,
                 )
 
-            obs = result.observation
+                obs = result.observation
 
-            if done:
-                break
+                if done:
+                    break
 
-        # ---- SCORE ---- #
-        total_reward = sum(rewards)
-        score = total_reward / 1.5
-        score = max(0.0, min(1.0, score))
+            total_reward = sum(rewards)
+            score = max(0.0, min(1.0, total_reward / 1.5))
+            success = score > 0.0
 
-        success = score > 0.0
+        except Exception as e:
+            print(f"ERROR | {e}", file=sys.stderr, flush=True)
+            success = False
+            score = 0.0
 
-    except Exception as e:
-        debug_logs.append(f"ERROR | {e}")
-        success = False
-        score = 0.0
+        rewards_str = ",".join(f"{r:.2f}" for r in rewards)
 
-    # ---------------- END ---------------- #
-    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
-
-    print(
-        f"[END] success={str(success).lower()} "
-        f"steps={steps_taken} score={score:.3f} rewards={rewards_str}",
-        flush=True
-    )
-
-    # 🔥 PRINT DEBUG ONLY AFTER END
-    for log in debug_logs:
-        print(log, file=sys.stderr, flush=True)
+        print(
+            f"[END] success={str(success).lower()} "
+            f"steps={steps_taken} score={score:.3f} rewards={rewards_str}",
+            flush=True,
+        )
 
 
-# ---------------------------
-# ENTRY
-# ---------------------------
 if __name__ == "__main__":
     asyncio.run(main())
