@@ -1,0 +1,17 @@
+[project]
+name = "medical-triage-env"
+version = "0.1.0"
+description = "Clinical triage environment using OpenEnv"
+authors = [
+    {name = "Manideep"}
+]
+
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "pydantic",
+    "openai"
+]
+
+[tool.openenv]
+entry_point = "app:app"
