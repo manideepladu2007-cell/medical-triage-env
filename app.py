@@ -4,39 +4,28 @@ import asyncio
 
 from env.env import MedTriageEnv
 from env.models import TriageAction
+from inference import main as run_inference  # 👈 ADD THIS
 
 app = FastAPI()
 
 env = MedTriageEnv(task_id="hard")
 
 
-# ---------------------------
-# REQUEST MODELS
-# ---------------------------
 class StepRequest(BaseModel):
     action_type: str
 
 
-# ---------------------------
-# ROOT (for HF health check)
-# ---------------------------
 @app.get("/")
 def root():
     return {"status": "running"}
 
 
-# ---------------------------
-# RESET ENDPOINT ✅
-# ---------------------------
 @app.post("/reset")
 async def reset():
     obs = await env.reset()
     return obs.model_dump()
 
 
-# ---------------------------
-# STEP ENDPOINT ✅
-# ---------------------------
 @app.post("/step")
 async def step(req: StepRequest):
     action = TriageAction(action_type=req.action_type)
@@ -48,3 +37,9 @@ async def step(req: StepRequest):
         "done": result.done,
         "info": result.info
     }
+
+
+# 🚀 THIS BRINGS BACK YOUR LOGS
+@app.on_event("startup")
+async def start_background_task():
+    asyncio.create_task(run_inference())
