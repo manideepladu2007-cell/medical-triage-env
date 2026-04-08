@@ -6,7 +6,7 @@ async def run(task_id: str):
     env = MedTriageEnv(task_id=task_id)
     obs = await env.reset()
 
-    total_reward = 0
+    total_reward = 0.0
 
     actions = [
         TriageAction(action_type="ask_vitals"),
@@ -21,10 +21,17 @@ async def run(task_id: str):
         if result.done:
             break
 
-    score = max(0.0, min(1.0, total_reward / 1.5))
+    # 🔥 NORMALIZE
+    raw_score = total_reward / 1.5
+
+    # 🔥 STRICT RANGE FIX (IMPORTANT)
+    epsilon = 1e-6
+    score = max(epsilon, min(1 - epsilon, raw_score))
+
     return score
 
 
+# ---------------- TASK GRADERS ---------------- #
 async def grade_easy():
     return await run("easy")
 
