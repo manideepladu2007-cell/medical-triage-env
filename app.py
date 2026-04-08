@@ -1,18 +1,12 @@
-from fastapi import FastAPI
-from pydantic import BaseModel
-import asyncio
-
+from fastapi import FastAPI, Request
 from env.env import MedTriageEnv
 from env.models import TriageAction
-from inference import main as run_inference  # 👈 ADD THIS
+import asyncio
+from inference import main as run_inference
 
 app = FastAPI()
 
-env = MedTriageEnv(task_id="hard")
-
-
-class StepRequest(BaseModel):
-    action_type: str
+triage_env = MedTriageEnv()
 
 
 @app.get("/")
@@ -20,26 +14,51 @@ def root():
     return {"status": "running"}
 
 
+@app.get("/health")
+def health():
+    return {"status": "healthy"}
+
+
 @app.post("/reset")
-async def reset():
-    obs = await env.reset()
+async def reset(request: Request):
+
+    task_id = "easy"
+
+    try:
+        data = await request.json()
+
+        if "task" in data:
+            task_id = data["task"]
+        elif "task_id" in data:
+            task_id = data["task_id"]
+
+    except:
+        task_id = request.query_params.get("task", "easy")
+
+    obs = await triage_env.reset(task_id=task_id)
+
     return obs.model_dump()
 
 
 @app.post("/step")
-async def step(req: StepRequest):
-    action = TriageAction(action_type=req.action_type)
-    result = await env.step(action)
+async def step(action: TriageAction):
+
+    result = await triage_env.step(action)
 
     return {
         "observation": result.observation.model_dump(),
         "reward": result.reward.value,
         "done": result.done,
-        "info": result.info
+        "info": result.info,
     }
 
 
-# 🚀 THIS BRINGS BACK YOUR LOGS
+@app.get("/state")
+def state():
+    return triage_env.state()
+
+
+# RUN INFERENCE FOR LOGS
 @app.on_event("startup")
-async def start_background_task():
+async def start_background():
     asyncio.create_task(run_inference())
