@@ -9,6 +9,9 @@ from env.models import (
 )
 
 
+# ---------------------------
+# STEP RESULT
+# ---------------------------
 class StepResult:
     def __init__(self, observation, reward, done, info):
         self.observation = observation
@@ -17,19 +20,28 @@ class StepResult:
         self.info = info
 
 
+# ---------------------------
+# ENVIRONMENT
+# ---------------------------
 class MedTriageEnv:
     def __init__(self, task_id="easy", seed=42):
         self.task_id = task_id
         self.rng = random.Random(seed)
 
-    async def reset(self):
+    # 🔥 FIXED: dynamic task switching
+    async def reset(self, task_id: str = None):
+
+        # Allow dynamic task change
+        if task_id and task_id in TASK_REGISTRY:
+            self.task_id = task_id
+
         self.current_case = self.rng.choice(
             TASK_REGISTRY[self.task_id]["scenarios"]
         )
+
         self.step_count = 0
         self.done = False
         self.asked_questions = set()
-
         self.current_vitals = "unknown"
 
         return TriageObservation(
@@ -37,6 +49,8 @@ class MedTriageEnv:
             age=self.current_case["age"],
             known_conditions=[],
             vitals="unknown",
+            patient_response=None,
+            time_elapsed=0,
             available_actions=[
                 "ask_symptom_details",
                 "ask_vitals",
@@ -47,9 +61,18 @@ class MedTriageEnv:
             ],
         )
 
+    # ---------------------------
+    # STEP FUNCTION
+    # ---------------------------
     async def step(self, action: TriageAction):
+
         if self.done:
-            return StepResult(None, TriageReward(value=0.0), True, {})
+            return StepResult(
+                None,
+                TriageReward(value=0.0),
+                True,
+                {"reason": "Episode already finished"},
+            )
 
         self.step_count += 1
         hidden = self.current_case["hidden_truth"]
@@ -59,6 +82,7 @@ class MedTriageEnv:
 
         # ---------------- ASK QUESTIONS ---------------- #
         if action.action_type.startswith("ask"):
+
             if action.action_type in self.asked_questions:
                 reward -= 0.05
                 info["reason"] = "Repeated question"
@@ -75,6 +99,7 @@ class MedTriageEnv:
                     info["reason"] = "Irrelevant question"
                     info["confidence"] = 0.5
 
+                # Reveal vitals when asked
                 if action.action_type == "ask_vitals":
                     self.current_vitals = hidden["revealed_vitals"]
 
@@ -97,7 +122,12 @@ class MedTriageEnv:
                 ],
             )
 
-            return StepResult(obs, TriageReward(value=reward), False, info)
+            return StepResult(
+                obs,
+                TriageReward(value=reward),
+                False,
+                info,
+            )
 
         # ---------------- FINAL DECISION ---------------- #
         correct = hidden["correct_action"]
@@ -122,6 +152,10 @@ class MedTriageEnv:
             TriageObservation(
                 symptoms=[],
                 age=0,
+                known_conditions=[],
+                vitals="unknown",
+                patient_response=None,
+                time_elapsed=self.step_count,
                 available_actions=[],
             ),
             TriageReward(value=reward),
@@ -129,9 +163,12 @@ class MedTriageEnv:
             info,
         )
 
-    # ✅ REQUIRED FOR OPENENV VALIDATION
+    # ---------------------------
+    # REQUIRED FOR OPENENV
+    # ---------------------------
     def state(self) -> Dict[str, Any]:
         return {
+            "task_id": self.task_id,
             "step": getattr(self, "step_count", 0),
             "symptoms": self.current_case["initial_symptoms"]
             if hasattr(self, "current_case")
@@ -139,4 +176,6 @@ class MedTriageEnv:
             "age": self.current_case["age"]
             if hasattr(self, "current_case")
             else 0,
+            "vitals": getattr(self, "current_vitals", "unknown"),
+            "done": getattr(self, "done", False),
         }
