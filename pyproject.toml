@@ -3,7 +3,7 @@ name = "medical-triage-env"
 version = "0.1.0"
 description = "Clinical triage environment using OpenEnv"
 authors = [
-    {name = "Manideep"}
+    { name = "Manideep" }
 ]
 
 dependencies = [
@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.scripts]
-server = "server.app:main" ✅
+server = "server.app:main"
 
 [tool.openenv]
 entry_point = "app:app"
