@@ -17,14 +17,22 @@ MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
 
 
 # ---------------------------
-# SAFE LLM CALL
+# FALLBACK POLICY
+# ---------------------------
+def fallback_decision(obs, reason):
+    if obs.vitals == "unknown":
+        return "ask_vitals", reason
+
+    if "chest pain" in obs.symptoms or obs.vitals == "unstable":
+        return "send_to_ER", reason
+
+    return "ask_symptom_details", reason
+
+
+# ---------------------------
+# LLM CALL
 # ---------------------------
 def get_llm_action(client, observation):
-    """
-    Calls LLM safely. If fails → fallback logic.
-    """
-
-    # If no API → fallback immediately
     if not API_KEY:
         return fallback_decision(observation, "No API key fallback")
 
@@ -52,7 +60,6 @@ Respond ONLY in JSON:
 
         raw = response.choices[0].message.content.strip()
 
-        # 🛡 CLEAN JSON (handles ```json blocks)
         if "```" in raw:
             raw = raw.split("```")[-2].strip()
 
@@ -65,23 +72,6 @@ Respond ONLY in JSON:
 
     except Exception as e:
         return fallback_decision(observation, f"LLM error: {e}")
-
-
-# ---------------------------
-# FALLBACK POLICY (SAFE)
-# ---------------------------
-def fallback_decision(obs, reason):
-    """
-    Simple safe policy when LLM fails.
-    """
-
-    if obs.vitals == "unknown":
-        return "ask_vitals", reason
-
-    if "chest pain" in obs.symptoms or obs.vitals == "unstable":
-        return "send_to_ER", reason
-
-    return "ask_symptom_details", reason
 
 
 # ---------------------------
@@ -101,6 +91,8 @@ async def main():
     rewards = []
     steps_taken = 0
     success = False
+
+    debug_logs = []  # 🔥 store debug safely
 
     # ---------------- START ---------------- #
     print(
@@ -127,22 +119,19 @@ async def main():
             rewards.append(reward)
             steps_taken = step
 
-            # ✅ STRICT STDOUT (ONLY THIS FORMAT)
+            # ✅ STRICT STDOUT ONLY
             print(
                 f"[STEP] step={step} action={action.action_type} "
                 f"reward={reward:.2f} done={str(done).lower()} error=null",
                 flush=True
             )
 
-            # 🔥 DEBUG → STDERR ONLY (SAFE)
+            # 🔥 STORE DEBUG (DO NOT PRINT NOW)
             if result.info:
                 env_reason = result.info.get("reason", "none")
 
-                print(
-                    f"DEBUG | step={step} llm_reason={llm_reason} "
-                    f"env_reason={env_reason}",
-                    file=sys.stderr,
-                    flush=True
+                debug_logs.append(
+                    f"DEBUG | step={step} llm_reason={llm_reason} env_reason={env_reason}"
                 )
 
             obs = result.observation
@@ -158,7 +147,7 @@ async def main():
         success = score > 0.0
 
     except Exception as e:
-        print(f"ERROR | {e}", file=sys.stderr, flush=True)
+        debug_logs.append(f"ERROR | {e}")
         success = False
         score = 0.0
 
@@ -170,6 +159,10 @@ async def main():
         f"steps={steps_taken} score={score:.3f} rewards={rewards_str}",
         flush=True
     )
+
+    # 🔥 PRINT DEBUG ONLY AFTER END
+    for log in debug_logs:
+        print(log, file=sys.stderr, flush=True)
 
 
 # ---------------------------
